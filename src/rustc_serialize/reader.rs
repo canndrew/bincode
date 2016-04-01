@@ -43,7 +43,11 @@ pub enum DecodingError {
     InvalidEncoding(InvalidEncoding),
     /// If decoding a message takes more than the provided size limit, this
     /// error is returned.
-    SizeLimit
+    SizeLimit {
+        bytes_read: u64,
+        attempted_read_size: u64,
+        size_limit: u64,
+    },
 }
 
 impl fmt::Display for DecodingError {
@@ -53,8 +57,10 @@ impl fmt::Display for DecodingError {
                 write!(fmt, "IoError: {}", ioerr),
             DecodingError::InvalidEncoding(ref ib) =>
                 write!(fmt, "InvalidEncoding: {}", ib),
-            DecodingError::SizeLimit =>
-                write!(fmt, "SizeLimit")
+            DecodingError::SizeLimit { bytes_read, attempted_read_size, size_limit } =>
+                write!(fmt, "SizeLimit: bytes_read == {}, attempted_read_size == {}, size_limit == {}",
+                    bytes_read, attempted_read_size, size_limit
+                ),
         }
     }
 }
@@ -77,7 +83,7 @@ impl Error for DecodingError {
         match *self {
             DecodingError::IoError(ref err) => Error::description(err),
             DecodingError::InvalidEncoding(ref ib) => ib.desc,
-            DecodingError::SizeLimit => "the size limit for decoding has been reached"
+            DecodingError::SizeLimit { .. } => "the size limit for decoding has been reached"
         }
     }
 
@@ -85,7 +91,7 @@ impl Error for DecodingError {
         match *self {
             DecodingError::IoError(ref err)     => err.cause(),
             DecodingError::InvalidEncoding(_) => None,
-            DecodingError::SizeLimit => None
+            DecodingError::SizeLimit { .. } => None
         }
     }
 }
@@ -129,14 +135,28 @@ impl<'a, R: Read> DecoderReader<'a, R> {
 
 impl <'a, A> DecoderReader<'a, A> {
     fn read_bytes(&mut self, count: u64) -> Result<(), DecodingError> {
-        self.read = match self.read.checked_add(count) {
+        let next_read = match self.read.checked_add(count) {
             Some(read) => read,
-            None => return Err(DecodingError::SizeLimit),
+            None => return Err(DecodingError::SizeLimit {
+                bytes_read: self.read,
+                attempted_read_size: count,
+                size_limit: self.size_limit.to_u64(),
+            }),
         };
         match self.size_limit {
-            SizeLimit::Infinite => Ok(()),
-            SizeLimit::Bounded(x) if self.read <= x => Ok(()),
-            SizeLimit::Bounded(_) => Err(DecodingError::SizeLimit)
+            SizeLimit::Infinite => {
+                self.read = next_read;
+                Ok(())
+            },
+            SizeLimit::Bounded(x) if next_read <= x => {
+                self.read = next_read;
+                Ok(())
+            },
+            SizeLimit::Bounded(x) => Err(DecodingError::SizeLimit {
+                bytes_read: self.read,
+                attempted_read_size: count,
+                size_limit: x,
+            }),
         }
     }
 
@@ -353,7 +373,11 @@ impl<'a, R: Read> Decoder for DecoderReader<'a, R> {
                     None => true,
                 };
                 if overflow {
-                    return Err(DecodingError::SizeLimit);
+                    return Err(DecodingError::SizeLimit {
+                        bytes_read: self.read,
+                        attempted_read_size: len as u64,
+                        size_limit: x,
+                    });
                 }
             },
         };
@@ -376,7 +400,11 @@ impl<'a, R: Read> Decoder for DecoderReader<'a, R> {
                     None => true,
                 };
                 if overflow {
-                    return Err(DecodingError::SizeLimit);
+                    return Err(DecodingError::SizeLimit {
+                        bytes_read: self.read,
+                        attempted_read_size: len as u64,
+                        size_limit: x,
+                    });
                 }
             },
         };

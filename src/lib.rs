@@ -73,3 +73,12 @@ pub enum SizeLimit {
     Bounded(u64)
 }
 
+impl SizeLimit {
+    fn to_u64(self) -> u64 {
+        match self {
+            SizeLimit::Infinite   => std::u64::MAX,
+            SizeLimit::Bounded(x) => x,
+        }
+    }
+}
+
